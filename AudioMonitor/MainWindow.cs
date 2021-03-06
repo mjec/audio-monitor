@@ -1,13 +1,7 @@
 ﻿using System;
-using System.Collections.Generic;
-using System.ComponentModel;
-using System.Data;
-using System.Drawing;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
 using System.Windows.Forms;
-using CoreAudio;
+using NAudio.CoreAudioApi;
+using NAudio.Wave;
 
 namespace AudioMonitor
 {
@@ -21,39 +15,85 @@ namespace AudioMonitor
 
         private void InitializeDeviceComboBox()
         {
-            MMDeviceEnumerator enumerator = new MMDeviceEnumerator();
-            MMDeviceCollection devices = enumerator.EnumerateAudioEndPoints(EDataFlow.eCapture, DEVICE_STATE.DEVICE_STATE_ACTIVE);
+            MMDeviceEnumerator enumerator = new NAudio.CoreAudioApi.MMDeviceEnumerator();
+            MMDeviceCollection devices = enumerator.EnumerateAudioEndPoints(DataFlow.Capture, DeviceState.Active);
+            string DefaultDeviceID = enumerator.GetDefaultAudioEndpoint(DataFlow.Capture, Role.Multimedia).ID;
             for (int i = 0; i < devices.Count; i++)
             {
                 DeviceComboBox.Items.Add(devices[i]);
-                if (devices[i].Selected)
+                if (DefaultDeviceID == devices[i].ID)
                 {
                     DeviceComboBox.SelectedIndex = i;
                 }
             }
         }
 
-        private void SetInterfaceFromDevice()
+        private void SetUIValuesFromDevice()
         {
-            VolumeTrackBar.Value = (int)Math.Round(100 * (DeviceComboBox.SelectedItem as MMDevice).AudioEndpointVolume.MasterVolumeLevelScalar);
-            MuteCheckBox.Checked = (DeviceComboBox.SelectedItem as MMDevice).AudioEndpointVolume.Mute;
+            MMDevice SelectedAudioDevice = DeviceComboBox.SelectedItem as MMDevice;
+            VolumeTrackBar.Value = (int)Math.Round(100 * SelectedAudioDevice.AudioEndpointVolume.MasterVolumeLevelScalar);
+            MuteCheckBox.Checked = SelectedAudioDevice.AudioEndpointVolume.Mute;
             VolumeLabel.Text = VolumeTrackBar.Value.ToString();
+            PeakMeterTrackBar.Value = (int) Math.Round(100 * MaxObservedVolume);
+        }
+
+        private void AudioDataAvailable(object sender, WaveInEventArgs e)
+        {
+            var buffer = new WaveBuffer(e.Buffer);
+            // interpret as 32 bit floating point audio
+            for (int index = 0; index < e.BytesRecorded / 4; index++)
+            {
+                var sample = buffer.FloatBuffer[index];
+
+                // absolute value 
+                if (sample < 0) sample = -sample;
+                // is this the max value?
+                if (sample > MaxObservedVolume) MaxObservedVolume = sample;
+            }
         }
 
         private void VolumeTrackBar_Scroll(object sender, EventArgs e)
         {
-            (DeviceComboBox.SelectedItem as MMDevice).AudioEndpointVolume.MasterVolumeLevelScalar = VolumeTrackBar.Value / 100;
+            (DeviceComboBox.SelectedItem as MMDevice).AudioEndpointVolume.MasterVolumeLevelScalar = (float)(VolumeTrackBar.Value / 100.0);
+            SetUIValuesFromDevice();
         }
 
         private void DeviceComboBox_SelectedIndexChanged(object sender, EventArgs e)
         {
-            SetInterfaceFromDevice();
+            SetUIValuesFromDevice();
+            MMDevice SelectedAudioDevice = DeviceComboBox.SelectedItem as MMDevice;
+            if (AudioCapture != null)
+            {
+                AudioCapture.StopRecording();
+                AudioCapture.Dispose();
+            }
+            AudioCapture = new WasapiCapture(SelectedAudioDevice);
+            AudioCapture.DataAvailable += new EventHandler<NAudio.Wave.WaveInEventArgs>(this.AudioDataAvailable);
+            AudioCapture.StartRecording();
         }
 
         private void MuteCheckBox_CheckedChanged(object sender, EventArgs e)
         {
             (DeviceComboBox.SelectedItem as MMDevice).AudioEndpointVolume.Mute = MuteCheckBox.Checked;
-            SetInterfaceFromDevice();
+            SetUIValuesFromDevice();
+        }
+
+        private void UpdateTimer_Tick(object sender, EventArgs e)
+        {
+            SetUIValuesFromDevice();
+        }
+
+        private void PeakMeterResetButton_Click(object sender, EventArgs e)
+        {
+            MaxObservedVolume = 0.0f;
+        }
+
+        private WasapiCapture AudioCapture = null;
+        private float MaxObservedVolume = 0.0f; // between 0 and 1, inclusive
+
+        private void PeakMeterTrackBar_ValueChanged(object sender, EventArgs e)
+        {
+            PeakMeterLabel.Text = PeakMeterTrackBar.Value.ToString();
         }
     }
 }
